@@ -1,0 +1,24 @@
+[package]
+name = "ssdp-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Sans-IO, no_std SSDP (UPnP DA 1.1) protocol implementation for upnp-forge"
+categories = ["embedded", "network-programming", "no-std", "parser-implementations"]
+keywords = ["ssdp", "upnp", "no-std", "sans-io"]
+
+[features]
+default = []
+alloc = []
+std = ["alloc"]
+defmt = ["dep:defmt"]
+
+[dependencies]
+heapless = "0.8"
+httparse = { version = "1.9", default-features = false }
+defmt = { version = "0.3", optional = true }
+
+[dev-dependencies]
+proptest = "1"
+hex-literal = "0.4"
