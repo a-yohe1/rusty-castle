@@ -1,0 +1,16 @@
+[package]
+name = "upnp-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Sans-IO, no_std UPnP Device Architecture XML and SOAP primitives"
+categories = ["embedded", "network-programming", "no-std"]
+keywords = ["upnp", "soap", "xml", "no-std", "sans-io"]
+
+[features]
+default = ["alloc"]
+alloc = []
+std = ["alloc"]
+
+[dependencies]

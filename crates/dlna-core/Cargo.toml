@@ -1,0 +1,16 @@
+[package]
+name = "dlna-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Sans-IO, no_std DLNA protocolInfo and header helpers"
+categories = ["embedded", "multimedia", "network-programming", "no-std"]
+keywords = ["dlna", "upnp", "protocolinfo", "no-std"]
+
+[features]
+default = ["alloc"]
+alloc = []
+std = ["alloc"]
+
+[dependencies]

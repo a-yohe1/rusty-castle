@@ -472,7 +472,7 @@ M3	SOAP
 M4	Browse
 M5	DIDL-Lite
 M6	HTTP Range
-M7	Sony TV playback
+M7	Sony TV playback (Sony TV discovery, browsing, media list, and MP4 playback validated)
 M8	filesystem catalog
 M9	DVD support
 
@@ -483,5 +483,6 @@ Success Criteria
 Sony TV discovers the MediaServer
 → Browse works correctly
 → Media list is visible
-→ mp4/vob playback works
+→ mp4 playback works
+→ vob playback works
 → Seeking works correctly

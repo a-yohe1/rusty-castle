@@ -1,0 +1,18 @@
+[package]
+name = "upnp-av-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Sans-IO, no_std UPnP AV ContentDirectory and ConnectionManager helpers"
+categories = ["embedded", "multimedia", "network-programming", "no-std"]
+keywords = ["upnp-av", "contentdirectory", "didl", "dlna", "no-std"]
+
+[features]
+default = ["alloc"]
+alloc = ["dlna-core/alloc", "upnp-core/alloc"]
+std = ["alloc", "dlna-core/std", "upnp-core/std"]
+
+[dependencies]
+dlna-core = { path = "../dlna-core", default-features = false }
+upnp-core = { path = "../upnp-core", default-features = false }

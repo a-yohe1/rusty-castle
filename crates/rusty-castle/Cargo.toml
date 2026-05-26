@@ -1,0 +1,17 @@
+[package]
+name = "rusty-castle"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "UPnP AV / DLNA MediaServer application core"
+categories = ["multimedia", "network-programming"]
+keywords = ["upnp", "dlna", "mediaserver"]
+
+[dependencies]
+dlna-core = { path = "../dlna-core" }
+log = "0.4.29"
+media-http = { path = "../media-http" }
+ssdp-core = { path = "../ssdp-core", features = ["std"] }
+upnp-av-core = { path = "../upnp-av-core" }
+upnp-core = { path = "../upnp-core" }
