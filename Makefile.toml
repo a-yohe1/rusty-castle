@@ -1,6 +1,9 @@
 [config]
 default_to_workspace = false
 
+[env]
+RUSTY_CASTLE_IMAGE = "rusty-castle:latest"
+
 [tasks.fmt]
 description = "Format all Rust sources."
 command = "cargo"
@@ -66,3 +69,12 @@ dependencies = [
     "test",
     "test-no-default-features",
 ]
+
+[tasks.docker-image]
+description = "Build the rusty-castle Docker image."
+command = "docker"
+args = ["build", "-t", "${RUSTY_CASTLE_IMAGE}", "."]
+
+[tasks.docker-build]
+description = "Alias for docker-image."
+alias = "docker-image"

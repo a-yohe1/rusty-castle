@@ -163,6 +163,28 @@ Run all tests:
 cargo test
 ```
 
+Build the Docker image:
+
+```sh
+cargo make docker-image
+```
+
+Override the image tag when needed:
+
+```sh
+RUSTY_CASTLE_IMAGE=registry.example.com/rusty-castle:dev cargo make docker-image
+```
+
+Run the container with a reachable LAN host address and mounted media
+directory:
+
+```sh
+docker run --rm --network host \
+  -e RUSTY_CASTLE_HOST=192.168.1.10 \
+  -v /path/to/media:/media:ro \
+  rusty-castle:latest
+```
+
 Run clippy:
 
 ```sh
