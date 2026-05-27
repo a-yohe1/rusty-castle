@@ -16,7 +16,7 @@ use ssdp_core::{Instant, parse_datagram};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream, UdpSocket};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime};
@@ -112,6 +112,13 @@ impl RuntimeState {
         self.media.iter().find(|entry| entry.item.id == id)
     }
 
+    fn media_by_id_or_legacy_index(&self, id: &str) -> Option<&ServedMedia> {
+        self.media_by_id(id).or_else(|| {
+            let legacy_index = id.parse::<usize>().ok()?.checked_sub(1)?;
+            self.media.get(legacy_index)
+        })
+    }
+
     /// Returns the scanned catalog.
     pub fn catalog(&self) -> &StaticCatalog {
         &self.catalog
@@ -193,7 +200,6 @@ pub fn run(config: RuntimeConfig) -> io::Result<()> {
     thread::spawn(move || {
         if let Err(err) = run_ssdp(ssdp_config) {
             error!("ssdp failed: {err}");
-            eprintln!("SSDP failed: {err}");
         }
     });
     run_http(config)
@@ -207,7 +213,6 @@ pub fn scan_media_dir(media_dir: &Path, public_base_url: &str) -> io::Result<Vec
         public_base_url
     );
     let mut out = Vec::new();
-    let mut next_id = 1u32;
     let mut entries = std::fs::read_dir(media_dir)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(|entry| entry.path());
     for entry in entries {
@@ -218,8 +223,8 @@ pub fn scan_media_dir(media_dir: &Path, public_base_url: &str) -> io::Result<Vec
         let Some(kind) = media_kind(&path) else {
             continue;
         };
-        let id = next_id.to_string();
-        next_id += 1;
+        let relative_path = path.strip_prefix(media_dir).unwrap_or(&path);
+        let id = stable_media_id(relative_path);
         let title = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -247,18 +252,133 @@ pub fn scan_media_dir(media_dir: &Path, public_base_url: &str) -> io::Result<Vec
             },
         };
         item.size = Some(metadata.len());
+        if matches!(kind, MediaKind::Mp4) {
+            item.duration = mp4_duration(&path)?;
+        }
         info!(
-            "found media id={} title={:?} path={} mime={} size={}",
+            "found media id={} title={:?} path={} mime={} size={} duration={:?}",
             item.id,
             item.title,
             path.display(),
             item.mime_type,
-            metadata.len()
+            metadata.len(),
+            item.duration
         );
         out.push(ServedMedia { item, path });
     }
     info!("media scan complete: {} supported files", out.len());
     Ok(out)
+}
+
+fn stable_media_id(relative_path: &Path) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for component in relative_path.components() {
+        if let Component::Normal(value) = component {
+            for byte in value.to_string_lossy().as_bytes() {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            hash ^= u64::from(b'/');
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    format!("m-{hash:016x}")
+}
+
+fn mp4_duration(path: &Path) -> io::Result<Option<String>> {
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    let Some((timescale, duration)) = find_mp4_mvhd(&mut file, 0, len)? else {
+        return Ok(None);
+    };
+    if timescale == 0 {
+        return Ok(None);
+    }
+    Ok(Some(format_dlna_duration(duration, timescale)))
+}
+
+fn find_mp4_mvhd(file: &mut File, mut start: u64, end: u64) -> io::Result<Option<(u32, u64)>> {
+    while start + 8 <= end {
+        file.seek(SeekFrom::Start(start))?;
+        let mut header = [0u8; 8];
+        if file.read_exact(&mut header).is_err() {
+            return Ok(None);
+        }
+        let size32 = u32::from_be_bytes(header[0..4].try_into().unwrap()) as u64;
+        let box_type = &header[4..8];
+        let (box_size, header_len) = match size32 {
+            0 => (end.saturating_sub(start), 8),
+            1 => {
+                let mut large_size = [0u8; 8];
+                file.read_exact(&mut large_size)?;
+                (u64::from_be_bytes(large_size), 16)
+            }
+            _ => (size32, 8),
+        };
+        if box_size < header_len || start.saturating_add(box_size) > end {
+            return Ok(None);
+        }
+        let payload_start = start + header_len;
+        let payload_end = start + box_size;
+        if box_type == b"mvhd" {
+            return read_mvhd(file, payload_start, payload_end);
+        }
+        if box_type == b"moov" {
+            if let Some(duration) = find_mp4_mvhd(file, payload_start, payload_end)? {
+                return Ok(Some(duration));
+            }
+        }
+        start += box_size;
+    }
+    Ok(None)
+}
+
+fn read_mvhd(
+    file: &mut File,
+    payload_start: u64,
+    payload_end: u64,
+) -> io::Result<Option<(u32, u64)>> {
+    if payload_end.saturating_sub(payload_start) < 20 {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(payload_start))?;
+    let mut version_and_flags = [0u8; 4];
+    file.read_exact(&mut version_and_flags)?;
+    match version_and_flags[0] {
+        0 => {
+            let mut fields = [0u8; 16];
+            file.read_exact(&mut fields)?;
+            let timescale = u32::from_be_bytes(fields[8..12].try_into().unwrap());
+            let duration = u32::from_be_bytes(fields[12..16].try_into().unwrap()) as u64;
+            Ok(Some((timescale, duration)))
+        }
+        1 => {
+            if payload_end.saturating_sub(payload_start) < 32 {
+                return Ok(None);
+            }
+            let mut fields = [0u8; 28];
+            file.read_exact(&mut fields)?;
+            let timescale = u32::from_be_bytes(fields[16..20].try_into().unwrap());
+            let duration = u64::from_be_bytes(fields[20..28].try_into().unwrap());
+            Ok(Some((timescale, duration)))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn format_dlna_duration(duration: u64, timescale: u32) -> String {
+    let timescale = u64::from(timescale);
+    let total_ms = duration.saturating_mul(1000).saturating_add(timescale / 2) / timescale;
+    let total_seconds = total_ms / 1000;
+    let millis = total_ms % 1000;
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    if millis == 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{hours}:{minutes:02}:{seconds:02}.{millis:03}")
+    }
 }
 
 fn handle_stream(mut stream: TcpStream, state: &RuntimeState) -> io::Result<()> {
@@ -312,7 +432,7 @@ fn media_response(
     method: Method,
     range: Option<&str>,
 ) -> io::Result<HttpResponse> {
-    let Some(entry) = state.media_by_id(id) else {
+    let Some(entry) = state.media_by_id_or_legacy_index(id) else {
         warn!("media request for unknown id={id}");
         return Ok(HttpResponse::new(
             404,

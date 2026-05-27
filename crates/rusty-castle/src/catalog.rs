@@ -51,10 +51,8 @@ impl StaticCatalog {
 
     /// Creates a catalog from an existing item list.
     pub fn from_items(items: Vec<MediaItem>) -> Self {
-        Self {
-            items,
-            update_id: 1,
-        }
+        let update_id = catalog_update_id(&items);
+        Self { items, update_id }
     }
 
     /// Adds an item and bumps the update id.
@@ -77,4 +75,30 @@ impl StaticCatalog {
     pub fn update_id(&self) -> u32 {
         self.update_id
     }
+}
+
+fn catalog_update_id(items: &[MediaItem]) -> u32 {
+    let mut hash = 0x811c_9dc5u32;
+    for item in items {
+        hash_field(&mut hash, &item.id);
+        hash_field(&mut hash, &item.title);
+        hash_field(&mut hash, &item.url);
+        hash_field(&mut hash, &item.mime_type);
+        if let Some(size) = item.size {
+            hash_field(&mut hash, &size.to_string());
+        }
+        if let Some(duration) = &item.duration {
+            hash_field(&mut hash, duration);
+        }
+    }
+    hash.max(1)
+}
+
+fn hash_field(hash: &mut u32, value: &str) {
+    for byte in value.as_bytes() {
+        *hash ^= u32::from(*byte);
+        *hash = hash.wrapping_mul(0x0100_0193);
+    }
+    *hash ^= u32::from(0xffu8);
+    *hash = hash.wrapping_mul(0x0100_0193);
 }

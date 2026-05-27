@@ -1,8 +1,11 @@
+use log::info;
 use rusty_castle::runtime::{RuntimeConfig, run};
 use std::env;
+use std::fmt::Write as _;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn main() -> std::io::Result<()> {
     init_logging();
@@ -23,13 +26,13 @@ fn main() -> std::io::Result<()> {
         config = config.with_ssdp_interface(interface);
     }
 
-    eprintln!(
+    info!(
         "serving {} at {}",
         config.media_dir.display(),
         config.public_base_url
     );
     if !config.ssdp_interface.is_unspecified() {
-        eprintln!("using {} for SSDP multicast", config.ssdp_interface);
+        info!("using {} for SSDP multicast", config.ssdp_interface);
     }
     run(config)
 }
@@ -77,9 +80,79 @@ impl log::Log for SimpleLogger {
 
     fn log(&self, record: &log::Record<'_>) {
         if self.enabled(record.metadata()) {
-            eprintln!("{} {} {}", record.level(), record.target(), record.args());
+            eprintln!(
+                "{} {} {} {}",
+                format_timestamp(SystemTime::now()),
+                record.level(),
+                record.target(),
+                record.args()
+            );
         }
     }
 
     fn flush(&self) {}
+}
+
+fn format_timestamp(now: SystemTime) -> String {
+    let millis_since_epoch = match now.duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration_to_millis(duration),
+        Err(err) => -duration_to_millis(err.duration()),
+    };
+    let seconds_since_epoch = millis_since_epoch.div_euclid(1000);
+    let milliseconds = millis_since_epoch.rem_euclid(1000);
+    let days_since_epoch = seconds_since_epoch.div_euclid(86_400);
+    let seconds_of_day = seconds_since_epoch.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days_since_epoch as i64);
+    let hour = seconds_of_day / 3_600;
+    let minute = seconds_of_day % 3_600 / 60;
+    let second = seconds_of_day % 60;
+
+    let mut timestamp = String::new();
+    let _ = write!(
+        timestamp,
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{milliseconds:03}Z"
+    );
+    timestamp
+}
+
+fn duration_to_millis(duration: Duration) -> i128 {
+    i128::from(duration.as_secs())
+        .saturating_mul(1000)
+        .saturating_add(i128::from(duration.subsec_millis()))
+}
+
+fn civil_from_days(days_since_epoch: i64) -> (i64, u32, u32) {
+    let days = days_since_epoch + 719_468;
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let day_of_era = days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_part = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_part + 2) / 5 + 1;
+    let month = month_part + if month_part < 10 { 3 } else { -9 };
+    if month <= 2 {
+        year += 1;
+    }
+
+    (year, month as u32, day as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_unix_epoch_timestamp() {
+        assert_eq!(format_timestamp(UNIX_EPOCH), "1970-01-01T00:00:00.000Z");
+    }
+
+    #[test]
+    fn formats_timestamp_with_milliseconds() {
+        assert_eq!(
+            format_timestamp(UNIX_EPOCH + Duration::from_millis(1_704_067_202_345)),
+            "2024-01-01T00:00:02.345Z"
+        );
+    }
 }
