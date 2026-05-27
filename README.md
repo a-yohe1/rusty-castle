@@ -3,6 +3,11 @@
 Rust-based UPnP AV / DLNA MediaServer workbench, built around reusable
 sans-IO protocol crates.
 
+`rusty-castle` is in early development. It is intended for experimentation,
+local-network testing, and feedback from people who want a small Rust DLNA
+server stack to inspect and build on. Expect missing features, rough runtime
+ergonomics, and breaking changes before a stable release.
+
 The current implementation can:
 
 - advertise a UPnP MediaServer over SSDP
@@ -18,6 +23,19 @@ The current implementation can:
 The protocol crates stay `no_std` where practical. Runtime work such as UDP,
 TCP, filesystem scanning, and blocking HTTP serving lives in the application
 crate.
+
+## Why Try It
+
+- Small, inspectable Rust implementation of the UPnP AV / DLNA MediaServer
+  pieces needed for basic TV discovery, browsing, and playback.
+- Sans-IO protocol crates keep parsing, encoding, and response planning separate
+  from sockets, filesystems, and process-level runtime concerns.
+- `no_std` protocol crates with `#![deny(unsafe_code)]` where the design allows
+  it.
+- HTTP media serving supports `HEAD`, full-file `GET`, byte ranges, and DLNA
+  response headers needed by typical media clients.
+- Initial real-device validation has focused on Sony TV discovery, browsing,
+  and MP4 playback.
 
 ## Quick Start
 
@@ -149,6 +167,52 @@ The runtime currently exposes files from one flat directory. Recursive scanning,
 metadata extraction, subtitles, transcoding, DVD menu support, and AVTransport
 are still deferred.
 
+## Benchmarks and Validation
+
+`rusty-castle` includes lightweight `cargo bench` targets for hot protocol
+paths that can be measured without live network devices or media files. These
+benches use stable Rust with custom bench binaries, so they work with the
+repository toolchain instead of requiring nightly `#[bench]`.
+
+Run all current benchmarks:
+
+```sh
+cargo make bench
+```
+
+Or run individual benches:
+
+```sh
+cargo bench -p ssdp-core --bench parse
+cargo bench -p media-http --bench range
+```
+
+Current benchmark coverage:
+
+- SSDP `M-SEARCH` and `NOTIFY ssdp:alive` datagram parsing.
+- HTTP `Range` header parsing.
+- DLNA media partial-response planning.
+
+Current performance-oriented properties:
+
+- SSDP parsing borrows from the input datagram instead of allocating owned
+  message data.
+- Protocol encoders write into caller-provided buffers.
+- Media HTTP response planning computes range metadata separately from file I/O,
+  so tests can cover byte-range behavior without serving large files.
+- The runtime streams file bodies from disk and supports byte-range reads for
+  clients that probe or resume media playback.
+
+Current validation before release:
+
+```sh
+cargo make ci
+cargo test -p media-http --no-default-features
+cargo test -p upnp-core --no-default-features
+cargo test -p dlna-core --no-default-features
+cargo test -p upnp-av-core --no-default-features
+```
+
 ## Development
 
 Install the task runner used by CI:
@@ -192,13 +256,13 @@ directory:
 docker run --rm --network host \
   -e RUSTY_CASTLE_HOST=192.168.1.10 \
   -v /path/to/media:/media:ro \
-  rusty-castle:0.1.0-dev-g<commit>
+  rusty-castle:0.0.1-dev-g<commit>
 ```
 
 ## Releases
 
 Releases are driven by SemVer git tags with a `v` prefix, for example
-`v0.1.0`. The release workflow requires the tag version to match
+`v0.0.1`. The release workflow requires the tag version to match
 `crates/rusty-castle/Cargo.toml`.
 
 For normal releases, use the developer release script:
@@ -216,14 +280,14 @@ pass the bump directly:
 scripts/release.sh patch
 scripts/release.sh minor
 scripts/release.sh major
-scripts/release.sh 0.2.3
+scripts/release.sh 0.0.1
 ```
 
 Pushing the `vX.Y.Z` tag creates a GitHub Release with a Linux binary archive
 and publishes a Docker image to GitHub Container Registry:
 
 ```text
-ghcr.io/<owner>/<repo>:0.1.0
+ghcr.io/<owner>/<repo>:0.0.1
 ghcr.io/<owner>/<repo>:sha-<commit>
 ```
 
@@ -231,7 +295,7 @@ Pushes to `main` publish development images that include the package version and
 short commit hash:
 
 ```text
-ghcr.io/<owner>/<repo>:0.1.0-dev-g<commit>
+ghcr.io/<owner>/<repo>:0.0.1-dev-g<commit>
 ghcr.io/<owner>/<repo>:sha-<commit>
 ```
 
@@ -275,3 +339,7 @@ Next likely work:
 - add recursive catalog scanning
 - add richer media metadata and DLNA profile selection
 - replace or supplement the blocking runtime with an async adapter
+
+## License
+
+Licensed under the MIT License. See [LICENSE](LICENSE).

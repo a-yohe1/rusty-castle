@@ -61,6 +61,23 @@ dependencies = [
     "test-upnp-av-core-no-default-features",
 ]
 
+[tasks.bench]
+description = "Run lightweight cargo bench measurements."
+dependencies = [
+    "bench-ssdp-parse",
+    "bench-media-http-range",
+]
+
+[tasks.bench-ssdp-parse]
+description = "Benchmark SSDP datagram parsing."
+command = "cargo"
+args = ["bench", "-p", "ssdp-core", "--bench", "parse"]
+
+[tasks.bench-media-http-range]
+description = "Benchmark HTTP range parsing and response planning."
+command = "cargo"
+args = ["bench", "-p", "media-http", "--bench", "range"]
+
 [tasks.ci]
 description = "Run the same checks used by GitHub Actions."
 dependencies = [

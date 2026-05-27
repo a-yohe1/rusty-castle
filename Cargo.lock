@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "dlna-core"
-version = "0.1.0"
+version = "0.0.1"
 
 [[package]]
 name = "equivalent"
@@ -259,7 +259,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "media-http"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "dlna-core",
 ]
@@ -440,7 +440,7 @@ dependencies = [
 
 [[package]]
 name = "rusty-castle"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "dlna-core",
  "log",
@@ -512,7 +512,7 @@ dependencies = [
 
 [[package]]
 name = "ssdp-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "defmt 0.3.100",
  "heapless",
@@ -591,7 +591,7 @@ checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
 name = "upnp-av-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "dlna-core",
  "upnp-core",
@@ -599,7 +599,7 @@ dependencies = [
 
 [[package]]
 name = "upnp-core"
-version = "0.1.0"
+version = "0.0.1"
 
 [[package]]
 name = "wait-timeout"
