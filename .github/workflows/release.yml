@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build release assets
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Validate tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          package_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(p["version"] for p in data["packages"] if p["name"] == "rusty-castle"))')"
+
+          if [[ "${version}" != "${package_version}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match rusty-castle package version ${package_version}." >&2
+            exit 1
+          fi
+
+          {
+            echo "version=${version}"
+            echo "revision=${GITHUB_SHA::12}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        run: cargo test --workspace --all-features
+
+      - name: Build binary
+        env:
+          RUSTY_CASTLE_VERSION: ${{ steps.version.outputs.version }}
+          RUSTY_CASTLE_REVISION: ${{ steps.version.outputs.revision }}
+        run: cargo build --release -p rusty-castle
+
+      - name: Package binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset="rusty-castle-${{ steps.version.outputs.version }}-x86_64-unknown-linux-gnu"
+          mkdir -p "dist/${asset}"
+          cp target/release/rusty-castle "dist/${asset}/"
+          cp README.md "dist/${asset}/"
+          tar -C dist -czf "dist/${asset}.tar.gz" "${asset}"
+          sha256sum "dist/${asset}.tar.gz" > "dist/${asset}.tar.gz.sha256"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256

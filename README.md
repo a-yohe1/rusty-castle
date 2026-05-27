@@ -27,6 +27,12 @@ Run the MediaServer against a media directory:
 RUSTY_CASTLE_HOST=192.168.1.10 cargo run -p rusty-castle -- /path/to/media
 ```
 
+Check the embedded build version:
+
+```sh
+cargo run -p rusty-castle -- --version
+```
+
 `RUSTY_CASTLE_HOST` should be the LAN address that TVs and other DLNA clients
 can reach. The server listens on:
 
@@ -169,7 +175,11 @@ Build the Docker image:
 cargo make docker-image
 ```
 
-Override the image tag when needed:
+By default, the local image is tagged from the current version. Exact `vX.Y.Z`
+git tags build `rusty-castle:X.Y.Z`; other commits build
+`rusty-castle:X.Y.Z-dev-g<commit>`.
+
+Override the image name or registry when needed:
 
 ```sh
 RUSTY_CASTLE_IMAGE=registry.example.com/rusty-castle:dev cargo make docker-image
@@ -182,7 +192,47 @@ directory:
 docker run --rm --network host \
   -e RUSTY_CASTLE_HOST=192.168.1.10 \
   -v /path/to/media:/media:ro \
-  rusty-castle:latest
+  rusty-castle:0.1.0-dev-g<commit>
+```
+
+## Releases
+
+Releases are driven by SemVer git tags with a `v` prefix, for example
+`v0.1.0`. The release workflow requires the tag version to match
+`crates/rusty-castle/Cargo.toml`.
+
+For normal releases, use the developer release script:
+
+```sh
+scripts/release.sh
+```
+
+The script asks whether the release is a `patch`, `minor`, `major`, or custom
+`X.Y.Z` version, shows the planned version and tag, runs tests, creates the
+release commit and annotated tag, then pushes both to `origin`. You can also
+pass the bump directly:
+
+```sh
+scripts/release.sh patch
+scripts/release.sh minor
+scripts/release.sh major
+scripts/release.sh 0.2.3
+```
+
+Pushing the `vX.Y.Z` tag creates a GitHub Release with a Linux binary archive
+and publishes a Docker image to GitHub Container Registry:
+
+```text
+ghcr.io/<owner>/<repo>:0.1.0
+ghcr.io/<owner>/<repo>:sha-<commit>
+```
+
+Pushes to `main` publish development images that include the package version and
+short commit hash:
+
+```text
+ghcr.io/<owner>/<repo>:0.1.0-dev-g<commit>
+ghcr.io/<owner>/<repo>:sha-<commit>
 ```
 
 Run clippy:

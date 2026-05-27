@@ -72,8 +72,20 @@ dependencies = [
 
 [tasks.docker-image]
 description = "Build the rusty-castle Docker image."
-command = "docker"
-args = ["build", "-t", "${RUSTY_CASTLE_IMAGE}", "."]
+script = '''
+set -eu
+version="$(scripts/version.sh cargo)"
+revision="$(scripts/version.sh revision)"
+image="${RUSTY_CASTLE_IMAGE}"
+if [ "$image" = "rusty-castle:latest" ]; then
+    image="rusty-castle:$(scripts/version.sh docker)"
+fi
+docker build \
+    --build-arg "RUSTY_CASTLE_VERSION=${version}" \
+    --build-arg "RUSTY_CASTLE_REVISION=${revision}" \
+    -t "${image}" \
+    .
+'''
 
 [tasks.docker-build]
 description = "Alias for docker-image."

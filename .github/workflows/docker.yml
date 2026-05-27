@@ -1,0 +1,77 @@
+name: Docker
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  image:
+    name: Build and publish image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Compute version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(p["version"] for p in data["packages"] if p["name"] == "rusty-castle"))')"
+          revision="${GITHUB_SHA::12}"
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            docker_tag="${version//+/-}"
+          else
+            version="${package_version}-dev+g${revision}"
+            docker_tag="${package_version}-dev-g${revision}"
+          fi
+
+          {
+            echo "version=${version}"
+            echo "revision=${revision}"
+            echo "docker_tag=${docker_tag}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            RUSTY_CASTLE_VERSION=${{ steps.version.outputs.version }}
+            RUSTY_CASTLE_REVISION=${{ steps.version.outputs.revision }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.docker_tag }}
+            ${{ env.IMAGE_NAME }}:sha-${{ steps.version.outputs.revision }}

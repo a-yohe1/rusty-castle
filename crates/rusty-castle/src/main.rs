@@ -1,19 +1,26 @@
 use log::info;
 use rusty_castle::runtime::{RuntimeConfig, run};
 use std::env;
+use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+const VERSION: &str = env!("RUSTY_CASTLE_VERSION");
+
 fn main() -> std::io::Result<()> {
     init_logging();
 
-    let media_dir = env::args_os()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or(env::current_dir()?);
+    let media_dir = match env::args_os().nth(1) {
+        Some(arg) if arg == OsStr::new("--version") || arg == OsStr::new("-V") => {
+            println!("rusty-castle {VERSION}");
+            return Ok(());
+        }
+        Some(arg) => PathBuf::from(arg),
+        None => env::current_dir()?,
+    };
     let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 49152);
     let host = env::var("RUSTY_CASTLE_HOST").unwrap_or_else(|_| "127.0.0.1".into());
     let base_url = format!("http://{host}:49152/");
