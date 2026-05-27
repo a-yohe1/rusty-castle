@@ -131,8 +131,9 @@ Release plan
   next version:    ${next}
   git tag:         ${tag}
 
-This will update ${package_manifest} and Cargo.lock, run tests, create a
-release commit, create an annotated tag, and push both to origin.
+This will update ${package_manifest} and Cargo.lock if needed, run tests,
+create an annotated tag, and push the release to origin. If the requested
+version is already committed, no release commit will be created.
 EOF
 
 confirm "Continue?" || exit 0
@@ -145,10 +146,16 @@ cargo check --workspace --all-features
 cargo test --workspace --all-features
 
 git diff -- "$package_manifest" Cargo.lock
-confirm "Create release commit and push ${tag}?" || exit 0
+confirm "Create release commit if needed and push ${tag}?" || exit 0
 
 git add "$package_manifest" Cargo.lock
-git commit -m "chore: release ${tag}"
+
+if git diff --cached --quiet; then
+    printf 'No version file changes to commit; tagging current HEAD.\n'
+else
+    git commit -m "chore: release ${tag}"
+fi
+
 git tag -a "$tag" -m "$tag"
 
 git push origin HEAD
