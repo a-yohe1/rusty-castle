@@ -1,0 +1,68 @@
+[config]
+default_to_workspace = false
+
+[tasks.fmt]
+description = "Format all Rust sources."
+command = "cargo"
+args = ["fmt", "--all"]
+
+[tasks.fmt-check]
+description = "Check Rust formatting without modifying files."
+command = "cargo"
+args = ["fmt", "--all", "--", "--check"]
+
+[tasks.clippy]
+description = "Run clippy for all workspace targets and features."
+command = "cargo"
+args = [
+    "clippy",
+    "--workspace",
+    "--all-targets",
+    "--all-features",
+    "--",
+    "-D",
+    "warnings",
+]
+
+[tasks.test]
+description = "Run all workspace tests with all features enabled."
+command = "cargo"
+args = ["test", "--workspace", "--all-features"]
+
+[tasks.test-media-http-no-default-features]
+description = "Check media-http with default features disabled."
+command = "cargo"
+args = ["test", "-p", "media-http", "--no-default-features"]
+
+[tasks.test-upnp-core-no-default-features]
+description = "Check upnp-core with default features disabled."
+command = "cargo"
+args = ["test", "-p", "upnp-core", "--no-default-features"]
+
+[tasks.test-dlna-core-no-default-features]
+description = "Check dlna-core with default features disabled."
+command = "cargo"
+args = ["test", "-p", "dlna-core", "--no-default-features"]
+
+[tasks.test-upnp-av-core-no-default-features]
+description = "Check upnp-av-core with default features disabled."
+command = "cargo"
+args = ["test", "-p", "upnp-av-core", "--no-default-features"]
+
+[tasks.test-no-default-features]
+description = "Run no-default-features checks for no_std-oriented crates."
+dependencies = [
+    "test-media-http-no-default-features",
+    "test-upnp-core-no-default-features",
+    "test-dlna-core-no-default-features",
+    "test-upnp-av-core-no-default-features",
+]
+
+[tasks.ci]
+description = "Run the same checks used by GitHub Actions."
+dependencies = [
+    "fmt-check",
+    "clippy",
+    "test",
+    "test-no-default-features",
+]

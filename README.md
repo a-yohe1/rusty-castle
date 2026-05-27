@@ -145,6 +145,18 @@ are still deferred.
 
 ## Development
 
+Install the task runner used by CI:
+
+```sh
+cargo install cargo-make
+```
+
+Run the same checks as GitHub Actions:
+
+```sh
+cargo make ci
+```
+
 Run all tests:
 
 ```sh
