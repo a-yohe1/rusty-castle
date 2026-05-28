@@ -1,5 +1,12 @@
 # rusty-castle
 
+[![CI](https://github.com/a-yohe1/rusty-castle/actions/workflows/ci.yml/badge.svg)](https://github.com/a-yohe1/rusty-castle/actions/workflows/ci.yml)
+[![Docker](https://github.com/a-yohe1/rusty-castle/actions/workflows/docker.yml/badge.svg)](https://github.com/a-yohe1/rusty-castle/actions/workflows/docker.yml)
+[![Release](https://github.com/a-yohe1/rusty-castle/actions/workflows/release.yml/badge.svg)](https://github.com/a-yohe1/rusty-castle/actions/workflows/release.yml)
+[![Latest Release](https://img.shields.io/github/v/release/a-yohe1/rusty-castle?sort=semver)](https://github.com/a-yohe1/rusty-castle/releases)
+[![Container Registry](https://img.shields.io/badge/ghcr.io-rusty--castle-blue)](https://github.com/a-yohe1/rusty-castle/pkgs/container/rusty-castle)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 Rust-based UPnP AV / DLNA MediaServer workbench, built around reusable
 sans-IO protocol crates.
 
@@ -7,6 +14,18 @@ sans-IO protocol crates.
 local-network testing, and feedback from people who want a small Rust DLNA
 server stack to inspect and build on. Expect missing features, rough runtime
 ergonomics, and breaking changes before a stable release.
+
+## Project Status
+
+`rusty-castle` is currently pre-1.0 and best treated as an experimental DLNA
+MediaServer workbench. It is usable for local-network testing and has been
+validated against Sony TV discovery, browsing, and MP4 playback, but it does not
+yet aim to be a polished always-on home media server.
+
+The main branch is expected to build and pass the CI workflow. Docker images are
+published to GitHub Container Registry from pushes to `main` and from SemVer
+release tags. Public API, runtime configuration, image tags, and media catalog
+behavior may still change between releases.
 
 The current implementation can:
 
@@ -16,7 +35,7 @@ The current implementation can:
 - serve ContentDirectory and ConnectionManager SCPD XML
 - handle SOAP control requests for Browse, GetSystemUpdateID, GetProtocolInfo,
   and GetCurrentConnectionIDs
-- generate DIDL-Lite results for a static media catalog
+- generate DIDL-Lite results for a filesystem-backed media catalog
 - serve media files over HTTP with GET, HEAD, byte ranges, and DLNA headers
 - scan `mp4`, `mpg`, `mpeg`, and `vob` files from a media directory
 
@@ -38,6 +57,29 @@ crate.
   and MP4 playback.
 
 ## Quick Start
+
+Pull and run a development image published from `main`:
+
+```sh
+docker pull ghcr.io/a-yohe1/rusty-castle:0.0.1-dev-g<commit>
+docker run --rm --network host \
+  -e RUSTY_CASTLE_HOST=192.168.1.10 \
+  -v /path/to/media:/media:ro \
+  ghcr.io/a-yohe1/rusty-castle:0.0.1-dev-g<commit>
+```
+
+For a release image, replace the tag with the release version:
+
+```sh
+docker pull ghcr.io/a-yohe1/rusty-castle:0.0.1
+```
+
+If GHCR asks for authentication, log in with a GitHub account or token that can
+read the package:
+
+```sh
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
+```
 
 Run the MediaServer against a media directory:
 
@@ -302,16 +344,22 @@ Pushing the `vX.Y.Z` tag creates a GitHub Release with a Linux binary archive
 and publishes a Docker image to GitHub Container Registry:
 
 ```text
-ghcr.io/<owner>/<repo>:0.0.1
-ghcr.io/<owner>/<repo>:sha-<commit>
+ghcr.io/a-yohe1/rusty-castle:0.0.1
+ghcr.io/a-yohe1/rusty-castle:sha-<12-char-commit>
 ```
 
 Pushes to `main` publish development images that include the package version and
 short commit hash:
 
 ```text
-ghcr.io/<owner>/<repo>:0.0.1-dev-g<commit>
-ghcr.io/<owner>/<repo>:sha-<commit>
+ghcr.io/a-yohe1/rusty-castle:0.0.1-dev-g<12-char-commit>
+ghcr.io/a-yohe1/rusty-castle:sha-<12-char-commit>
+```
+
+Pull a published image directly from GHCR:
+
+```sh
+docker pull ghcr.io/a-yohe1/rusty-castle:<tag>
 ```
 
 Run clippy:
@@ -346,12 +394,11 @@ Implemented milestones:
 - M5: DIDL-Lite
 - M6: HTTP Range
 - M7: Sony TV discovery, browsing, and MP4 playback validation
-- M8: filesystem catalog, initial flat-directory form
+- M8: filesystem catalog with recursive directory browsing
 
 Next likely work:
 
 - improve network interface selection for SSDP multicast
-- add recursive catalog scanning
 - add richer media metadata and DLNA profile selection
 - replace or supplement the blocking runtime with an async adapter
 
