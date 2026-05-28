@@ -1,6 +1,6 @@
 //! SOAP control dispatch for the initial MediaServer.
 
-use crate::catalog::{MediaItem, StaticCatalog};
+use crate::catalog::{MediaContainer, MediaItem, StaticCatalog};
 use dlna_core::ProtocolInfoRef;
 use log::{debug, warn};
 use upnp_av_core::connection_manager::{
@@ -135,16 +135,24 @@ fn browse(
     let (result, number_returned, total_matches) = match (object_id, flag) {
         ("0", BrowseFlag::Metadata) => (root_didl(catalog)?, 1, 1),
         ("0", BrowseFlag::DirectChildren) => {
-            let didl = children_didl(catalog)?;
-            let count = catalog.items().len() as u32;
+            let didl = children_didl(catalog, "0")?;
+            let count = catalog.child_count("0");
             (didl, count, count)
         }
         (id, BrowseFlag::Metadata) => {
-            let item = catalog.item(id).ok_or(ControlError::NoSuchObject)?;
-            (item_didl(item)?, 1, 1)
+            if let Some(container) = catalog.container(id) {
+                (container_didl(catalog, container)?, 1, 1)
+            } else {
+                let item = catalog.item(id).ok_or(ControlError::NoSuchObject)?;
+                (item_didl(item)?, 1, 1)
+            }
         }
         (id, BrowseFlag::DirectChildren) => {
-            if catalog.item(id).is_some() {
+            if catalog.container(id).is_some() {
+                let didl = children_didl(catalog, id)?;
+                let count = catalog.child_count(id);
+                (didl, count, count)
+            } else if catalog.item(id).is_some() {
                 (empty_didl()?, 0, 0)
             } else {
                 return Err(ControlError::NoSuchObject);
@@ -179,25 +187,36 @@ fn root_didl(catalog: &StaticCatalog) -> Result<String, ControlError> {
         restricted: true,
         title: "Media",
         class: UpnpClass::Container,
-        child_count: Some(catalog.items().len() as u32),
+        child_count: Some(catalog.child_count("0")),
         resources: &[],
     }])
     .map_err(|_| ControlError::WriteFailed)
 }
 
-fn children_didl(catalog: &StaticCatalog) -> Result<String, ControlError> {
+fn children_didl(catalog: &StaticCatalog, parent_id: &str) -> Result<String, ControlError> {
     let resources: Vec<[ResourceRef<'_>; 1]> = catalog
-        .items()
-        .iter()
+        .child_items(parent_id)
         .map(|item| [resource_for_item(item)])
         .collect();
-    let objects: Vec<ObjectRef<'_>> = catalog
-        .items()
-        .iter()
-        .zip(resources.iter())
-        .map(|(item, res)| object_for_item(item, res))
+    let mut objects: Vec<ObjectRef<'_>> = catalog
+        .child_containers(parent_id)
+        .map(|container| object_for_container(catalog, container))
         .collect();
+    objects.extend(
+        catalog
+            .child_items(parent_id)
+            .zip(resources.iter())
+            .map(|(item, res)| object_for_item(item, res)),
+    );
     didl_to_string(&objects).map_err(|_| ControlError::WriteFailed)
+}
+
+fn container_didl(
+    catalog: &StaticCatalog,
+    container: &MediaContainer,
+) -> Result<String, ControlError> {
+    didl_to_string(&[object_for_container(catalog, container)])
+        .map_err(|_| ControlError::WriteFailed)
 }
 
 fn item_didl(item: &MediaItem) -> Result<String, ControlError> {
@@ -221,12 +240,27 @@ fn resource_for_item(item: &MediaItem) -> ResourceRef<'_> {
 fn object_for_item<'a>(item: &'a MediaItem, resources: &'a [ResourceRef<'a>]) -> ObjectRef<'a> {
     ObjectRef {
         id: &item.id,
-        parent_id: "0",
+        parent_id: &item.parent_id,
         restricted: true,
         title: &item.title,
         class: UpnpClass::VideoItem,
         child_count: None,
         resources,
+    }
+}
+
+fn object_for_container<'a>(
+    catalog: &StaticCatalog,
+    container: &'a MediaContainer,
+) -> ObjectRef<'a> {
+    ObjectRef {
+        id: &container.id,
+        parent_id: &container.parent_id,
+        restricted: true,
+        title: &container.title,
+        class: UpnpClass::Container,
+        child_count: Some(catalog.child_count(&container.id)),
+        resources: &[],
     }
 }
 

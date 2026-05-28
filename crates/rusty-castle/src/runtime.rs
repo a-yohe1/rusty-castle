@@ -1,6 +1,6 @@
 //! Blocking std runtime adapter for the initial MediaServer.
 
-use crate::catalog::{MediaItem, StaticCatalog};
+use crate::catalog::{MediaContainer, MediaItem, StaticCatalog};
 use crate::control::handle_control;
 use crate::description::{
     ServerConfig, connection_manager_scpd_xml, content_directory_scpd_xml, device_xml,
@@ -97,15 +97,24 @@ impl RuntimeState {
 
     /// Scans the configured media directory.
     pub fn scan(config: &RuntimeConfig) -> io::Result<Self> {
-        let media = scan_media_dir(&config.media_dir, &config.public_base_url)?;
-        Ok(Self::new(
-            ServerConfig::new(
+        let scanned = scan_media_tree(&config.media_dir, &config.public_base_url)?;
+        let catalog = StaticCatalog::from_parts(
+            scanned.containers,
+            scanned
+                .media
+                .iter()
+                .map(|entry| entry.item.clone())
+                .collect(),
+        );
+        Ok(Self {
+            config: ServerConfig::new(
                 config.public_base_url.clone(),
                 config.uuid.clone(),
                 config.friendly_name.clone(),
             ),
-            media,
-        ))
+            catalog,
+            media: scanned.media,
+        })
     }
 
     fn media_by_id(&self, id: &str) -> Option<&ServedMedia> {
@@ -207,23 +216,67 @@ pub fn run(config: RuntimeConfig) -> io::Result<()> {
 
 /// Scans a media directory for initially supported files.
 pub fn scan_media_dir(media_dir: &Path, public_base_url: &str) -> io::Result<Vec<ServedMedia>> {
+    Ok(scan_media_tree(media_dir, public_base_url)?.media)
+}
+
+#[derive(Debug)]
+struct ScannedMediaTree {
+    containers: Vec<MediaContainer>,
+    media: Vec<ServedMedia>,
+}
+
+fn scan_media_tree(media_dir: &Path, public_base_url: &str) -> io::Result<ScannedMediaTree> {
     debug!(
         "scanning media directory {} with base url {}",
         media_dir.display(),
         public_base_url
     );
-    let mut out = Vec::new();
-    let mut entries = std::fs::read_dir(media_dir)?.collect::<Result<Vec<_>, _>>()?;
+    let mut tree = ScannedMediaTree {
+        containers: Vec::new(),
+        media: Vec::new(),
+    };
+    scan_media_dir_into(media_dir, media_dir, "0", public_base_url, &mut tree)?;
+    info!("media scan complete: {} supported files", tree.media.len());
+    Ok(tree)
+}
+
+fn scan_media_dir_into(
+    root: &Path,
+    dir: &Path,
+    parent_id: &str,
+    public_base_url: &str,
+    tree: &mut ScannedMediaTree,
+) -> io::Result<()> {
+    let mut entries = std::fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(|entry| entry.path());
     for entry in entries {
         let path = entry.path();
+        if path.is_dir() {
+            let relative_path = path.strip_prefix(root).unwrap_or(&path);
+            let id = stable_container_id(relative_path);
+            let title = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(id.as_str())
+                .to_string();
+            info!(
+                "found media container id={} title={:?} path={}",
+                id,
+                title,
+                path.display()
+            );
+            tree.containers
+                .push(MediaContainer::new(id.clone(), parent_id, title));
+            scan_media_dir_into(root, &path, &id, public_base_url, tree)?;
+            continue;
+        }
         if !path.is_file() {
             continue;
         }
         let Some(kind) = media_kind(&path) else {
             continue;
         };
-        let relative_path = path.strip_prefix(media_dir).unwrap_or(&path);
+        let relative_path = path.strip_prefix(root).unwrap_or(&path);
         let id = stable_media_id(relative_path);
         let title = path
             .file_stem()
@@ -236,6 +289,7 @@ pub fn scan_media_dir(media_dir: &Path, public_base_url: &str) -> io::Result<Vec
             MediaKind::Mp4 => MediaItem::mp4(id, title, url),
             MediaKind::MpegPs { mime, profile } => MediaItem {
                 id,
+                parent_id: parent_id.to_string(),
                 title,
                 url,
                 mime_type: mime.into(),
@@ -251,6 +305,7 @@ pub fn scan_media_dir(media_dir: &Path, public_base_url: &str) -> io::Result<Vec
                 },
             },
         };
+        item.parent_id = parent_id.to_string();
         item.size = Some(metadata.len());
         if matches!(kind, MediaKind::Mp4) {
             item.duration = mp4_duration(&path)?;
@@ -264,13 +319,20 @@ pub fn scan_media_dir(media_dir: &Path, public_base_url: &str) -> io::Result<Vec
             metadata.len(),
             item.duration
         );
-        out.push(ServedMedia { item, path });
+        tree.media.push(ServedMedia { item, path });
     }
-    info!("media scan complete: {} supported files", out.len());
-    Ok(out)
+    Ok(())
 }
 
 fn stable_media_id(relative_path: &Path) -> String {
+    stable_object_id("m", relative_path)
+}
+
+fn stable_container_id(relative_path: &Path) -> String {
+    stable_object_id("c", relative_path)
+}
+
+fn stable_object_id(prefix: &str, relative_path: &Path) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for component in relative_path.components() {
         if let Component::Normal(value) = component {
@@ -282,7 +344,7 @@ fn stable_media_id(relative_path: &Path) -> String {
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
     }
-    format!("m-{hash:016x}")
+    format!("{prefix}-{hash:016x}")
 }
 
 fn mp4_duration(path: &Path) -> io::Result<Option<String>> {

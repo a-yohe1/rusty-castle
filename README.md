@@ -163,9 +163,10 @@ Initial compatibility targets:
 - `.mpeg`
 - `.vob`
 
-The runtime currently exposes files from one flat directory. Recursive scanning,
-metadata extraction, subtitles, transcoding, DVD menu support, and AVTransport
-are still deferred.
+The runtime recursively scans the media directory and exposes subdirectories as
+ContentDirectory containers, so DLNA clients can browse the same folder
+hierarchy. Richer metadata extraction, subtitles, transcoding, DVD menu support,
+and AVTransport are still deferred.
 
 ## Benchmarks and Validation
 

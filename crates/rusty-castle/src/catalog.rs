@@ -2,11 +2,39 @@
 
 use dlna_core::ProtocolInfoRef;
 
+/// A ContentDirectory container exposed as a browsable folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaContainer {
+    /// Stable object id.
+    pub id: String,
+    /// Parent container object id.
+    pub parent_id: String,
+    /// Display title.
+    pub title: String,
+}
+
+impl MediaContainer {
+    /// Creates a media container.
+    pub fn new(
+        id: impl Into<String>,
+        parent_id: impl Into<String>,
+        title: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            parent_id: parent_id.into(),
+            title: title.into(),
+        }
+    }
+}
+
 /// A media item exposed through ContentDirectory and `/media/{id}`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MediaItem {
     /// Stable object id.
     pub id: String,
+    /// Parent container object id.
+    pub parent_id: String,
     /// Display title.
     pub title: String,
     /// Public URL for the resource.
@@ -26,6 +54,7 @@ impl MediaItem {
     pub fn mp4(id: impl Into<String>, title: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
             id: id.into(),
+            parent_id: "0".into(),
             title: title.into(),
             url: url.into(),
             mime_type: "video/mp4".into(),
@@ -39,6 +68,7 @@ impl MediaItem {
 /// A simple in-memory catalog.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StaticCatalog {
+    containers: Vec<MediaContainer>,
     items: Vec<MediaItem>,
     update_id: u32,
 }
@@ -51,8 +81,17 @@ impl StaticCatalog {
 
     /// Creates a catalog from an existing item list.
     pub fn from_items(items: Vec<MediaItem>) -> Self {
-        let update_id = catalog_update_id(&items);
-        Self { items, update_id }
+        Self::from_parts(Vec::new(), items)
+    }
+
+    /// Creates a catalog from existing container and item lists.
+    pub fn from_parts(containers: Vec<MediaContainer>, items: Vec<MediaItem>) -> Self {
+        let update_id = catalog_update_id(&containers, &items);
+        Self {
+            containers,
+            items,
+            update_id,
+        }
     }
 
     /// Adds an item and bumps the update id.
@@ -66,6 +105,37 @@ impl StaticCatalog {
         &self.items
     }
 
+    /// Returns all non-root containers.
+    pub fn containers(&self) -> &[MediaContainer] {
+        &self.containers
+    }
+
+    /// Returns direct child containers for a parent object id.
+    pub fn child_containers(&self, parent_id: &str) -> impl Iterator<Item = &MediaContainer> {
+        self.containers
+            .iter()
+            .filter(move |container| container.parent_id == parent_id)
+    }
+
+    /// Returns direct child items for a parent object id.
+    pub fn child_items(&self, parent_id: &str) -> impl Iterator<Item = &MediaItem> {
+        self.items
+            .iter()
+            .filter(move |item| item.parent_id == parent_id)
+    }
+
+    /// Returns the number of direct children for a container object id.
+    pub fn child_count(&self, parent_id: &str) -> u32 {
+        let containers = self.child_containers(parent_id).count();
+        let items = self.child_items(parent_id).count();
+        (containers + items) as u32
+    }
+
+    /// Returns a container by object id.
+    pub fn container(&self, id: &str) -> Option<&MediaContainer> {
+        self.containers.iter().find(|container| container.id == id)
+    }
+
     /// Returns a catalog item by object id.
     pub fn item(&self, id: &str) -> Option<&MediaItem> {
         self.items.iter().find(|item| item.id == id)
@@ -77,10 +147,16 @@ impl StaticCatalog {
     }
 }
 
-fn catalog_update_id(items: &[MediaItem]) -> u32 {
+fn catalog_update_id(containers: &[MediaContainer], items: &[MediaItem]) -> u32 {
     let mut hash = 0x811c_9dc5u32;
+    for container in containers {
+        hash_field(&mut hash, &container.id);
+        hash_field(&mut hash, &container.parent_id);
+        hash_field(&mut hash, &container.title);
+    }
     for item in items {
         hash_field(&mut hash, &item.id);
+        hash_field(&mut hash, &item.parent_id);
         hash_field(&mut hash, &item.title);
         hash_field(&mut hash, &item.url);
         hash_field(&mut hash, &item.mime_type);

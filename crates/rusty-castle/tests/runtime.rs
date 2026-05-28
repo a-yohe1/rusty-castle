@@ -25,6 +25,47 @@ fn scans_supported_media_files() {
 }
 
 #[test]
+fn scans_supported_media_files_recursively() {
+    let dir = tempfile_dir();
+    fs::create_dir(dir.join("Season 1")).unwrap();
+    fs::write(dir.join("Season 1").join("episode.mp4"), b"1234").unwrap();
+
+    let media = scan_media_dir(&dir, "http://127.0.0.1:49152/").unwrap();
+
+    assert_eq!(media.len(), 1);
+    assert!(media[0].path.ends_with("Season 1/episode.mp4"));
+    assert!(media[0].item.parent_id.starts_with("c-"));
+}
+
+#[test]
+fn scanned_state_exposes_directory_containers() {
+    let dir = tempfile_dir();
+    fs::create_dir(dir.join("Season 1")).unwrap();
+    fs::write(dir.join("Season 1").join("episode.mp4"), b"1234").unwrap();
+    let config = RuntimeConfig::new(
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 49152),
+        "http://127.0.0.1:49152/",
+        "550e8400-e29b-41d4-a716-446655440000",
+        "Rusty Castle",
+        &dir,
+    );
+
+    let state = RuntimeState::scan(&config).unwrap();
+    let container = state
+        .catalog()
+        .containers()
+        .iter()
+        .find(|container| container.title == "Season 1")
+        .unwrap();
+    let item = state.catalog().items().first().unwrap();
+
+    assert_eq!(container.parent_id, "0");
+    assert_eq!(item.parent_id, container.id);
+    assert_eq!(state.catalog().child_count("0"), 1);
+    assert_eq!(state.catalog().child_count(&container.id), 1);
+}
+
+#[test]
 fn scanned_state_builds_device_xml() {
     let dir = tempfile_dir();
     fs::write(dir.join("clip.mp4"), b"1234").unwrap();

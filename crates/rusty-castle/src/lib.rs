@@ -5,7 +5,7 @@ pub mod control;
 pub mod description;
 pub mod runtime;
 
-pub use catalog::{MediaItem, StaticCatalog};
+pub use catalog::{MediaContainer, MediaItem, StaticCatalog};
 pub use control::{ControlError, ControlResponse, handle_control};
 pub use description::{
     ServerConfig, connection_manager_scpd_xml, content_directory_scpd_xml, device_xml,
