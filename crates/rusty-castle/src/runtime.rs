@@ -5,6 +5,7 @@ use crate::control::handle_control;
 use crate::description::{
     ServerConfig, connection_manager_scpd_xml, content_directory_scpd_xml, device_xml,
 };
+use crate::scenario::{RecordedInteraction, ScenarioRecorder};
 use dlna_core::{DlnaProfile, ProtocolInfoRef, write_content_features};
 use log::{debug, error, info, warn};
 use media_http::{ContentRange, MediaHeadersRef, Method, ResponseStatus, plan_media_response};
@@ -38,6 +39,8 @@ pub struct RuntimeConfig {
     pub friendly_name: String,
     /// Media directory to scan.
     pub media_dir: PathBuf,
+    /// Optional scenario capture JSONL path.
+    pub scenario_capture_path: Option<PathBuf>,
 }
 
 impl RuntimeConfig {
@@ -56,12 +59,19 @@ impl RuntimeConfig {
             uuid: uuid.into(),
             friendly_name: friendly_name.into(),
             media_dir: media_dir.into(),
+            scenario_capture_path: None,
         }
     }
 
     /// Uses a specific IPv4 interface for SSDP multicast.
     pub fn with_ssdp_interface(mut self, interface: Ipv4Addr) -> Self {
         self.ssdp_interface = interface;
+        self
+    }
+
+    /// Captures HTTP interactions to a JSON Lines scenario file.
+    pub fn with_scenario_capture_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.scenario_capture_path = Some(path.into());
         self
     }
 }
@@ -81,6 +91,7 @@ pub struct RuntimeState {
     config: ServerConfig,
     catalog: StaticCatalog,
     media: Vec<ServedMedia>,
+    scenario_recorder: Option<ScenarioRecorder>,
 }
 
 impl RuntimeState {
@@ -92,6 +103,7 @@ impl RuntimeState {
             config,
             catalog,
             media,
+            scenario_recorder: None,
         }
     }
 
@@ -114,7 +126,13 @@ impl RuntimeState {
             ),
             catalog,
             media: scanned.media,
+            scenario_recorder: None,
         })
+    }
+
+    fn with_scenario_recorder(mut self, recorder: ScenarioRecorder) -> Self {
+        self.scenario_recorder = Some(recorder);
+        self
     }
 
     fn media_by_id(&self, id: &str) -> Option<&ServedMedia> {
@@ -140,7 +158,12 @@ impl RuntimeState {
 
 /// Runs the blocking HTTP server. This function does not return under normal operation.
 pub fn run_http(config: RuntimeConfig) -> io::Result<()> {
-    let state = Arc::new(RuntimeState::scan(&config)?);
+    let mut state = RuntimeState::scan(&config)?;
+    if let Some(path) = &config.scenario_capture_path {
+        info!("capturing compatibility scenario to {}", path.display());
+        state = state.with_scenario_recorder(ScenarioRecorder::create(path)?);
+    }
+    let state = Arc::new(state);
     let listener = TcpListener::bind(config.http_bind)?;
     info!(
         "http listening on {} with {} media items",
@@ -448,11 +471,46 @@ fn handle_stream(mut stream: TcpStream, state: &RuntimeState) -> io::Result<()> 
     let mut reader = BufReader::new(stream.try_clone()?);
     let request = read_request(&mut reader)?;
     let response = route_request(&request, state)?;
+    capture_interaction(state, &request, &response);
     info!(
         "http {} {} -> {} peer={:?}",
         request.method, request.path, response.status, peer
     );
     write_response(&mut stream, response)
+}
+
+fn capture_interaction(state: &RuntimeState, request: &HttpRequest, response: &HttpResponse) {
+    let Some(recorder) = &state.scenario_recorder else {
+        return;
+    };
+    let (response_body, omitted_response_body_bytes) = replay_friendly_body(response);
+    let interaction = RecordedInteraction {
+        method: &request.method,
+        path: &request.path,
+        request_headers: &request.headers,
+        request_body: &request.body,
+        response_status: response.status,
+        response_content_type: &response.content_type,
+        response_headers: &response.headers,
+        response_body,
+        omitted_response_body_bytes,
+    };
+    if let Err(err) = recorder.record(&interaction) {
+        warn!("failed to capture scenario interaction: {err}");
+    }
+}
+
+fn replay_friendly_body(response: &HttpResponse) -> (Option<&str>, usize) {
+    let is_text = response.content_type.starts_with("text/")
+        || response.content_type.contains("xml")
+        || response.content_type.contains("json");
+    if is_text {
+        match std::str::from_utf8(&response.body) {
+            Ok(body) => return (Some(body), 0),
+            Err(_) => return (None, response.body.len()),
+        }
+    }
+    (None, response.body.len())
 }
 
 fn route_request(request: &HttpRequest, state: &RuntimeState) -> io::Result<HttpResponse> {
@@ -817,5 +875,52 @@ fn format_content_range(value: ContentRange) -> String {
             complete_len,
         } => format!("bytes {start}-{end}/{complete_len}"),
         ContentRange::Unsatisfied { complete_len } => format!("bytes */{complete_len}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::IpAddr;
+
+    #[test]
+    fn scenario_capture_keeps_text_response_body() {
+        let response = HttpResponse::new(
+            200,
+            "text/xml; charset=\"utf-8\"",
+            b"<root>ok</root>".to_vec(),
+        );
+
+        let (body, omitted) = replay_friendly_body(&response);
+
+        assert_eq!(body, Some("<root>ok</root>"));
+        assert_eq!(omitted, 0);
+    }
+
+    #[test]
+    fn scenario_capture_omits_binary_response_body() {
+        let response = HttpResponse::new(200, "video/mp4", vec![0, 1, 2, 3]);
+
+        let (body, omitted) = replay_friendly_body(&response);
+
+        assert_eq!(body, None);
+        assert_eq!(omitted, 4);
+    }
+
+    #[test]
+    fn runtime_config_accepts_scenario_capture_path() {
+        let config = RuntimeConfig::new(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 49152),
+            "http://127.0.0.1:49152/",
+            "550e8400-e29b-41d4-a716-446655440000",
+            "Rusty Castle",
+            ".",
+        )
+        .with_scenario_capture_path("/tmp/rusty-castle-scenario.jsonl");
+
+        assert_eq!(
+            config.scenario_capture_path.as_deref(),
+            Some(Path::new("/tmp/rusty-castle-scenario.jsonl"))
+        );
     }
 }

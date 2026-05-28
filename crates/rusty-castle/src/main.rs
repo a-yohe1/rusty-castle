@@ -32,6 +32,9 @@ fn main() -> std::io::Result<()> {
     if let Ok(interface) = host.parse::<Ipv4Addr>() {
         config = config.with_ssdp_interface(interface);
     }
+    if let Ok(path) = env::var("RUSTY_CASTLE_CAPTURE") {
+        config = config.with_scenario_capture_path(path);
+    }
 
     info!(
         "serving {} at {}",

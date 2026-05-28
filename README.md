@@ -69,6 +69,20 @@ RUST_LOG=debug
 logs. `RUSTY_CASTLE_LOG=debug` is also accepted when you only want to configure
 this binary.
 
+To capture HTTP interactions from a real DLNA client as replayable compatibility
+scenario data, set `RUSTY_CASTLE_CAPTURE` to a JSON Lines output path:
+
+```sh
+RUSTY_CASTLE_CAPTURE=/tmp/sony-bravia-browse.jsonl \
+  RUSTY_CASTLE_HOST=192.168.1.10 \
+  cargo run -p rusty-castle -- /path/to/media
+```
+
+The capture file records request and response metadata for device description,
+SCPD, SOAP, and media HTTP requests. Text and XML response bodies are included;
+binary media bodies are summarized by byte length so fixtures stay small. This
+scenario capture is separate from telemetry tracing such as OpenTelemetry.
+
 If a TV appears to cache an older device description, change
 `RUSTY_CASTLE_UUID` for the next run. The server also changes its SSDP
 `BOOTID.UPNP.ORG` on each process start so clients are nudged to refetch

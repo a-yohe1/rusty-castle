@@ -4,6 +4,7 @@ pub mod catalog;
 pub mod control;
 pub mod description;
 pub mod runtime;
+pub mod scenario;
 
 pub use catalog::{MediaContainer, MediaItem, StaticCatalog};
 pub use control::{ControlError, ControlResponse, handle_control};
