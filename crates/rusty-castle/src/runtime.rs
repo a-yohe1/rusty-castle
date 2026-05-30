@@ -18,7 +18,7 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream, UdpSocket};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock, RwLockReadGuard};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
@@ -168,19 +168,105 @@ impl RuntimeState {
     }
 }
 
+#[derive(Debug)]
+struct SharedRuntimeState {
+    config: RuntimeConfig,
+    current: RwLock<RuntimeState>,
+    scan_status: RwLock<ScanStatus>,
+}
+
+impl SharedRuntimeState {
+    fn new(config: RuntimeConfig, current: RuntimeState, initial_scan_duration: Duration) -> Self {
+        let item_count = current.catalog().items().len();
+        Self {
+            config,
+            current: RwLock::new(current),
+            scan_status: RwLock::new(ScanStatus {
+                last_scan_time: Some(SystemTime::now()),
+                last_scan_duration: Some(initial_scan_duration),
+                item_count,
+                error: None,
+            }),
+        }
+    }
+
+    fn current(&self) -> io::Result<RwLockReadGuard<'_, RuntimeState>> {
+        self.current
+            .read()
+            .map_err(|_| io::Error::other("runtime state lock poisoned"))
+    }
+
+    fn scan_status(&self) -> io::Result<ScanStatus> {
+        self.scan_status
+            .read()
+            .map(|status| status.clone())
+            .map_err(|_| io::Error::other("scan status lock poisoned"))
+    }
+
+    fn replace_library(&self, next: RuntimeState, duration: Duration) -> io::Result<()> {
+        let item_count = next.catalog().items().len();
+        {
+            let mut current = self
+                .current
+                .write()
+                .map_err(|_| io::Error::other("runtime state lock poisoned"))?;
+            *current = next;
+        }
+        self.update_scan_status(ScanStatus {
+            last_scan_time: Some(SystemTime::now()),
+            last_scan_duration: Some(duration),
+            item_count,
+            error: None,
+        })
+    }
+
+    fn record_scan_error(&self, error: String, duration: Duration) -> io::Result<()> {
+        let item_count = self.current()?.catalog().items().len();
+        self.update_scan_status(ScanStatus {
+            last_scan_time: Some(SystemTime::now()),
+            last_scan_duration: Some(duration),
+            item_count,
+            error: Some(error),
+        })
+    }
+
+    fn update_scan_status(&self, next: ScanStatus) -> io::Result<()> {
+        let mut status = self
+            .scan_status
+            .write()
+            .map_err(|_| io::Error::other("scan status lock poisoned"))?;
+        *status = next;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ScanStatus {
+    last_scan_time: Option<SystemTime>,
+    last_scan_duration: Option<Duration>,
+    item_count: usize,
+    error: Option<String>,
+}
+
 /// Runs the blocking HTTP server. This function does not return under normal operation.
 pub fn run_http(config: RuntimeConfig) -> io::Result<()> {
+    let scan_start = std::time::Instant::now();
     let mut state = RuntimeState::scan(&config)?;
+    let initial_scan_duration = scan_start.elapsed();
     if let Some(path) = &config.scenario_capture_path {
         info!("capturing compatibility scenario to {}", path.display());
         state = state.with_scenario_recorder(ScenarioRecorder::create(path)?);
     }
-    let state = Arc::new(state);
+    let state = Arc::new(SharedRuntimeState::new(
+        config.clone(),
+        state,
+        initial_scan_duration,
+    ));
     let listener = TcpListener::bind(config.http_bind)?;
     info!(
         "http listening on {} with {} media items",
         config.http_bind,
-        state.catalog().items().len()
+        state.current()?.catalog().items().len()
     );
     for stream in listener.incoming() {
         let state = Arc::clone(&state);
@@ -478,7 +564,7 @@ fn format_dlna_duration(duration: u64, timescale: u32) -> String {
     }
 }
 
-fn handle_stream(mut stream: TcpStream, state: &RuntimeState) -> io::Result<()> {
+fn handle_stream(mut stream: TcpStream, state: &SharedRuntimeState) -> io::Result<()> {
     let peer = stream.peer_addr().ok();
     let mut reader = BufReader::new(stream.try_clone()?);
     let request = read_request(&mut reader)?;
@@ -491,8 +577,12 @@ fn handle_stream(mut stream: TcpStream, state: &RuntimeState) -> io::Result<()> 
     write_response(&mut stream, response)
 }
 
-fn capture_interaction(state: &RuntimeState, request: &HttpRequest, response: &HttpResponse) {
-    let Some(recorder) = &state.scenario_recorder else {
+fn capture_interaction(state: &SharedRuntimeState, request: &HttpRequest, response: &HttpResponse) {
+    let Some(recorder) = &state
+        .current()
+        .ok()
+        .and_then(|current| current.scenario_recorder.clone())
+    else {
         return;
     };
     let (response_body, omitted_response_body_bytes) = replay_friendly_body(response);
@@ -525,15 +615,17 @@ fn replay_friendly_body(response: &HttpResponse) -> (Option<&str>, usize) {
     (None, response.body.len())
 }
 
-fn route_request(request: &HttpRequest, state: &RuntimeState) -> io::Result<HttpResponse> {
+fn route_request(request: &HttpRequest, state: &SharedRuntimeState) -> io::Result<HttpResponse> {
     match (request.method.as_str(), request.path.as_str()) {
-        ("GET", "/device.xml") => xml_response(device_xml(&state.config)),
+        ("GET", "/device.xml") => xml_response(device_xml(&state.current()?.config)),
         ("GET", "/ContentDirectory/scpd.xml") => xml_response(content_directory_scpd_xml()),
         ("GET", "/ConnectionManager/scpd.xml") => xml_response(connection_manager_scpd_xml()),
-        ("GET", "/ui") if state.web_ui_enabled => Ok(ui_index_response(state)),
-        ("GET", "/ui/library") if state.web_ui_enabled => Ok(ui_library_response(state)),
+        ("GET", "/ui") if state.current()?.web_ui_enabled => ui_index_response(state),
+        ("GET", "/ui/library") if state.current()?.web_ui_enabled => ui_library_response(state),
+        ("POST", "/ui/rescan") if state.current()?.web_ui_enabled => ui_rescan_response(state),
         ("POST", "/ContentDirectory/control") | ("POST", "/ConnectionManager/control") => {
-            let response = match handle_control(&request.body, &state.catalog) {
+            let catalog = state.current()?.catalog.clone();
+            let response = match handle_control(&request.body, &catalog) {
                 Ok(response) => response,
                 Err(err) => err.into_response(),
             };
@@ -560,7 +652,9 @@ fn route_request(request: &HttpRequest, state: &RuntimeState) -> io::Result<Http
     }
 }
 
-fn ui_index_response(state: &RuntimeState) -> HttpResponse {
+fn ui_index_response(state: &SharedRuntimeState) -> io::Result<HttpResponse> {
+    let current = state.current()?;
+    let scan_status = state.scan_status()?;
     let body = format!(
         r#"<!doctype html>
 <html lang="en">
@@ -576,6 +670,9 @@ h1 {{ font-size: 2rem; margin: 0 0 12px; }}
 p {{ line-height: 1.5; }}
 .metric {{ display: inline-block; margin: 16px 16px 0 0; }}
 .metric strong {{ display: block; font-size: 1.75rem; }}
+form {{ margin-top: 24px; }}
+button {{ padding: 8px 12px; font: inherit; }}
+.error {{ color: #b3261e; }}
 </style>
 </head>
 <body>
@@ -585,18 +682,29 @@ p {{ line-height: 1.5; }}
 <p><a href="/ui/library">Open library</a></p>
 <div class="metric"><strong>{}</strong><span>media items</span></div>
 <div class="metric"><strong>{}</strong><span>containers</span></div>
+<div class="metric"><strong>{}</strong><span>last scan</span></div>
+<form method="post" action="/ui/rescan"><button type="submit">Rescan library</button></form>
+{}
 </main>
 </body>
 </html>"#,
-        state.catalog.items().len(),
-        state.catalog.containers().len()
+        current.catalog.items().len(),
+        current.catalog.containers().len(),
+        scan_status_summary(&scan_status),
+        scan_error_html(&scan_status)
     );
-    HttpResponse::new(200, "text/html; charset=\"utf-8\"", body.into_bytes())
+    Ok(HttpResponse::new(
+        200,
+        "text/html; charset=\"utf-8\"",
+        body.into_bytes(),
+    ))
 }
 
-fn ui_library_response(state: &RuntimeState) -> HttpResponse {
+fn ui_library_response(state: &SharedRuntimeState) -> io::Result<HttpResponse> {
+    let current = state.current()?;
+    let scan_status = state.scan_status()?;
     let mut containers = String::new();
-    for container in state.catalog.containers() {
+    for container in current.catalog.containers() {
         containers.push_str("<tr>");
         table_cell(&mut containers, &container.id);
         table_cell(&mut containers, &container.parent_id);
@@ -610,7 +718,7 @@ fn ui_library_response(state: &RuntimeState) -> HttpResponse {
     }
 
     let mut items = String::new();
-    for item in state.catalog.items() {
+    for item in current.catalog.items() {
         items.push_str("<tr>");
         table_cell(&mut items, &item.id);
         table_cell(&mut items, &item.parent_id);
@@ -660,11 +768,15 @@ code {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; f
 <p><a href="/ui">Observatory</a></p>
 <h1>Library</h1>
 <p>Read-only view of the current ContentDirectory catalog.</p>
+<form method="post" action="/ui/rescan"><button type="submit">Rescan library</button></form>
 <div class="summary">
 <div class="metric"><strong>{}</strong><span>containers</span></div>
 <div class="metric"><strong>{}</strong><span>media items</span></div>
 <div class="metric"><strong>{}</strong><span>update id</span></div>
+<div class="metric"><strong>{}</strong><span>last scan</span></div>
+<div class="metric"><strong>{}</strong><span>scan duration</span></div>
 </div>
+{}
 <h2>Containers</h2>
 <div class="table-wrap">
 <table>
@@ -682,11 +794,109 @@ code {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; f
 </main>
 </body>
 </html>"#,
-        state.catalog.containers().len(),
-        state.catalog.items().len(),
-        state.catalog.update_id()
+        current.catalog.containers().len(),
+        current.catalog.items().len(),
+        current.catalog.update_id(),
+        scan_status_time(&scan_status),
+        scan_status_duration(&scan_status),
+        scan_error_html(&scan_status)
     );
-    HttpResponse::new(200, "text/html; charset=\"utf-8\"", body.into_bytes())
+    Ok(HttpResponse::new(
+        200,
+        "text/html; charset=\"utf-8\"",
+        body.into_bytes(),
+    ))
+}
+
+fn ui_rescan_response(state: &SharedRuntimeState) -> io::Result<HttpResponse> {
+    match rescan_library(state) {
+        Ok(()) => {
+            let mut response = HttpResponse::new(303, "text/plain; charset=\"utf-8\"", Vec::new());
+            response
+                .headers
+                .push(("Location".into(), "/ui/library".into()));
+            Ok(response)
+        }
+        Err(err) => {
+            let body = format!(
+                "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Rescan failed</title></head><body><main><h1>Rescan failed</h1><p>{}</p><p><a href=\"/ui/library\">Back to library</a></p></main></body></html>",
+                html_escape(&err.to_string())
+            );
+            Ok(HttpResponse::new(
+                500,
+                "text/html; charset=\"utf-8\"",
+                body.into_bytes(),
+            ))
+        }
+    }
+}
+
+fn rescan_library(state: &SharedRuntimeState) -> io::Result<()> {
+    let started = std::time::Instant::now();
+    match RuntimeState::scan(&state.config) {
+        Ok(mut next) => {
+            next.scenario_recorder = state.current()?.scenario_recorder.clone();
+            let duration = started.elapsed();
+            state.replace_library(next, duration)?;
+            info!("manual media rescan completed in {:?}", duration);
+            Ok(())
+        }
+        Err(err) => {
+            let duration = started.elapsed();
+            let message = err.to_string();
+            state.record_scan_error(message.clone(), duration)?;
+            warn!(
+                "manual media rescan failed after {:?}: {}",
+                duration, message
+            );
+            Err(err)
+        }
+    }
+}
+
+fn scan_status_summary(status: &ScanStatus) -> String {
+    match (status.last_scan_time, status.error.as_deref()) {
+        (Some(_), Some(_)) => "failed".into(),
+        (Some(_), None) => format!("{} items", status.item_count),
+        (None, _) => "never".into(),
+    }
+}
+
+fn scan_status_time(status: &ScanStatus) -> String {
+    status
+        .last_scan_time
+        .map(format_scan_time)
+        .unwrap_or_else(|| "never".into())
+}
+
+fn format_scan_time(time: SystemTime) -> String {
+    match time.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(duration) => format!("{}s since epoch", duration.as_secs()),
+        Err(err) => format!("-{}s since epoch", err.duration().as_secs()),
+    }
+}
+
+fn scan_status_duration(status: &ScanStatus) -> String {
+    status
+        .last_scan_duration
+        .map(|duration| format!("{} ms", duration.as_millis()))
+        .unwrap_or_default()
+}
+
+fn scan_error_html(status: &ScanStatus) -> String {
+    let Some(error) = &status.error else {
+        return String::new();
+    };
+    format!(
+        "<p class=\"error\">Last scan error: {}</p>",
+        html_escape(error)
+    )
+}
+
+fn html_escape(value: &str) -> String {
+    let mut out = String::new();
+    html_escape_into(&mut out, value);
+    out
 }
 
 fn optional_size(size: Option<u64>) -> String {
@@ -726,12 +936,16 @@ fn html_escape_into(out: &mut String, value: &str) {
 }
 
 fn media_response(
-    state: &RuntimeState,
+    state: &SharedRuntimeState,
     id: &str,
     method: Method,
     range: Option<&str>,
 ) -> io::Result<HttpResponse> {
-    let Some(entry) = state.media_by_id_or_legacy_index(id) else {
+    let entry = {
+        let current = state.current()?;
+        current.media_by_id_or_legacy_index(id).cloned()
+    };
+    let Some(entry) = entry else {
         warn!("media request for unknown id={id}");
         return Ok(HttpResponse::new(
             404,
@@ -1038,6 +1252,7 @@ fn status_code(status: ResponseStatus) -> u16 {
 fn reason_phrase(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        303 => "See Other",
         206 => "Partial Content",
         404 => "Not Found",
         416 => "Range Not Satisfiable",
@@ -1060,6 +1275,7 @@ fn format_content_range(value: ContentRange) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::net::IpAddr;
 
     #[test]
@@ -1133,8 +1349,9 @@ mod tests {
             headers: Vec::new(),
             body: String::new(),
         };
+        let shared = shared_state(state);
 
-        let response = route_request(&request, &state).unwrap();
+        let response = route_request(&request, &shared).unwrap();
 
         assert_eq!(response.status, 404);
     }
@@ -1155,8 +1372,9 @@ mod tests {
             headers: Vec::new(),
             body: String::new(),
         };
+        let shared = shared_state(state);
 
-        let response = route_request(&request, &state).unwrap();
+        let response = route_request(&request, &shared).unwrap();
 
         assert_eq!(response.status, 404);
     }
@@ -1181,8 +1399,9 @@ mod tests {
             headers: Vec::new(),
             body: String::new(),
         };
+        let shared = shared_state(state);
 
-        let response = route_request(&request, &state).unwrap();
+        let response = route_request(&request, &shared).unwrap();
         let body = std::str::from_utf8(&response.body).unwrap();
 
         assert_eq!(response.status, 200);
@@ -1225,8 +1444,9 @@ mod tests {
             headers: Vec::new(),
             body: String::new(),
         };
+        let shared = shared_state(state);
 
-        let response = route_request(&request, &state).unwrap();
+        let response = route_request(&request, &shared).unwrap();
         let body = std::str::from_utf8(&response.body).unwrap();
 
         assert_eq!(response.status, 200);
@@ -1241,5 +1461,96 @@ mod tests {
         assert!(body.contains("0:01:30.500"));
         assert!(body.contains("http://127.0.0.1:49152/media/episode-1"));
         assert!(body.contains("http-get:*:video/mp4:DLNA.ORG_PN="));
+    }
+
+    #[test]
+    fn rescan_replaces_catalog_and_media_atomically() {
+        let dir = tempfile_dir();
+        fs::write(dir.join("first.mp4"), b"1234").unwrap();
+        let config = test_runtime_config(&dir).with_web_ui_enabled();
+        let state = RuntimeState::scan(&config).unwrap();
+        let shared = SharedRuntimeState::new(config, state, Duration::from_millis(0));
+
+        fs::write(dir.join("second.mp4"), b"5678").unwrap();
+        let request = HttpRequest {
+            method: "POST".into(),
+            path: "/ui/rescan".into(),
+            headers: Vec::new(),
+            body: String::new(),
+        };
+
+        let response = route_request(&request, &shared).unwrap();
+        let current = shared.current().unwrap();
+
+        assert_eq!(response.status, 303);
+        assert_eq!(
+            response
+                .headers
+                .iter()
+                .find(|(name, _)| name == "Location")
+                .map(|(_, value)| value.as_str()),
+            Some("/ui/library")
+        );
+        assert_eq!(current.catalog().items().len(), 2);
+        assert_eq!(current.media.len(), 2);
+    }
+
+    #[test]
+    fn failed_rescan_keeps_existing_catalog_and_reports_error() {
+        let dir = tempfile_dir();
+        fs::write(dir.join("first.mp4"), b"1234").unwrap();
+        let mut config = test_runtime_config(&dir).with_web_ui_enabled();
+        let state = RuntimeState::scan(&config).unwrap();
+        config.media_dir = dir.join("missing");
+        let shared = SharedRuntimeState::new(config, state, Duration::from_millis(0));
+        let request = HttpRequest {
+            method: "POST".into(),
+            path: "/ui/rescan".into(),
+            headers: Vec::new(),
+            body: String::new(),
+        };
+
+        let response = route_request(&request, &shared).unwrap();
+        let current = shared.current().unwrap();
+        let status = shared.scan_status().unwrap();
+
+        assert_eq!(response.status, 500);
+        assert_eq!(current.catalog().items().len(), 1);
+        assert!(status.error.is_some());
+    }
+
+    fn shared_state(state: RuntimeState) -> SharedRuntimeState {
+        let config = RuntimeConfig::new(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 49152),
+            state.config.base_url.clone(),
+            state.config.uuid.clone(),
+            state.config.friendly_name.clone(),
+            ".",
+        );
+        SharedRuntimeState::new(config, state, Duration::from_millis(0))
+    }
+
+    fn test_runtime_config(media_dir: &Path) -> RuntimeConfig {
+        RuntimeConfig::new(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 49152),
+            "http://127.0.0.1:49152/",
+            "550e8400-e29b-41d4-a716-446655440000",
+            "Rusty Castle",
+            media_dir,
+        )
+    }
+
+    fn tempfile_dir() -> PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "rusty-castle-runtime-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).unwrap();
+        dir
     }
 }
