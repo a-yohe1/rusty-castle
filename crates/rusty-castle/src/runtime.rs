@@ -531,6 +531,7 @@ fn route_request(request: &HttpRequest, state: &RuntimeState) -> io::Result<Http
         ("GET", "/ContentDirectory/scpd.xml") => xml_response(content_directory_scpd_xml()),
         ("GET", "/ConnectionManager/scpd.xml") => xml_response(connection_manager_scpd_xml()),
         ("GET", "/ui") if state.web_ui_enabled => Ok(ui_index_response(state)),
+        ("GET", "/ui/library") if state.web_ui_enabled => Ok(ui_library_response(state)),
         ("POST", "/ContentDirectory/control") | ("POST", "/ConnectionManager/control") => {
             let response = match handle_control(&request.body, &state.catalog) {
                 Ok(response) => response,
@@ -581,6 +582,7 @@ p {{ line-height: 1.5; }}
 <main>
 <h1>Rusty Castle Observatory</h1>
 <p>Experimental DLNA MediaServer inspection surface.</p>
+<p><a href="/ui/library">Open library</a></p>
 <div class="metric"><strong>{}</strong><span>media items</span></div>
 <div class="metric"><strong>{}</strong><span>containers</span></div>
 </main>
@@ -590,6 +592,137 @@ p {{ line-height: 1.5; }}
         state.catalog.containers().len()
     );
     HttpResponse::new(200, "text/html; charset=\"utf-8\"", body.into_bytes())
+}
+
+fn ui_library_response(state: &RuntimeState) -> HttpResponse {
+    let mut containers = String::new();
+    for container in state.catalog.containers() {
+        containers.push_str("<tr>");
+        table_cell(&mut containers, &container.id);
+        table_cell(&mut containers, &container.parent_id);
+        table_cell(&mut containers, &container.title);
+        table_cell(&mut containers, "");
+        table_cell(&mut containers, "");
+        table_cell(&mut containers, "");
+        table_cell(&mut containers, "");
+        table_cell(&mut containers, "");
+        containers.push_str("</tr>");
+    }
+
+    let mut items = String::new();
+    for item in state.catalog.items() {
+        items.push_str("<tr>");
+        table_cell(&mut items, &item.id);
+        table_cell(&mut items, &item.parent_id);
+        table_cell(&mut items, &item.title);
+        table_cell(&mut items, &item.mime_type);
+        table_cell(&mut items, &optional_size(item.size));
+        table_cell(&mut items, item.duration.as_deref().unwrap_or(""));
+        linked_table_cell(&mut items, &item.url);
+        table_cell(&mut items, &item.protocol_info.to_string());
+        items.push_str("</tr>");
+    }
+
+    let body = format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rusty Castle Library</title>
+<style>
+:root {{ color-scheme: light dark; font-family: system-ui, sans-serif; }}
+body {{ margin: 0; background: #f7f7f3; color: #202124; }}
+main {{ max-width: 1200px; margin: 0 auto; padding: 32px 24px; }}
+a {{ color: #1a5fb4; }}
+h1 {{ font-size: 1.75rem; margin: 16px 0 8px; }}
+h2 {{ font-size: 1.1rem; margin: 32px 0 12px; }}
+p {{ line-height: 1.5; }}
+.summary {{ display: flex; flex-wrap: wrap; gap: 16px; margin: 20px 0; }}
+.metric strong {{ display: block; font-size: 1.4rem; }}
+.table-wrap {{ overflow-x: auto; border: 1px solid #d7d7cf; background: #fff; }}
+table {{ border-collapse: collapse; min-width: 100%; font-size: 0.9rem; }}
+th, td {{ border-bottom: 1px solid #e4e4dc; padding: 10px 12px; text-align: left; vertical-align: top; }}
+th {{ background: #ededdf; font-weight: 650; white-space: nowrap; }}
+td {{ overflow-wrap: anywhere; }}
+code {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em; }}
+@media (prefers-color-scheme: dark) {{
+  body {{ background: #191a1a; color: #eeeeea; }}
+  a {{ color: #8ab4f8; }}
+  .table-wrap {{ border-color: #3a3b3b; background: #202124; }}
+  th, td {{ border-bottom-color: #343535; }}
+  th {{ background: #2a2b2b; }}
+}}
+</style>
+</head>
+<body>
+<main>
+<p><a href="/ui">Observatory</a></p>
+<h1>Library</h1>
+<p>Read-only view of the current ContentDirectory catalog.</p>
+<div class="summary">
+<div class="metric"><strong>{}</strong><span>containers</span></div>
+<div class="metric"><strong>{}</strong><span>media items</span></div>
+<div class="metric"><strong>{}</strong><span>update id</span></div>
+</div>
+<h2>Containers</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Object ID</th><th>Parent ID</th><th>Title</th><th>MIME type</th><th>Size</th><th>Duration</th><th>Media URL</th><th>protocolInfo</th></tr></thead>
+<tbody>{containers}</tbody>
+</table>
+</div>
+<h2>Media Items</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Object ID</th><th>Parent ID</th><th>Title</th><th>MIME type</th><th>Size</th><th>Duration</th><th>Media URL</th><th>protocolInfo</th></tr></thead>
+<tbody>{items}</tbody>
+</table>
+</div>
+</main>
+</body>
+</html>"#,
+        state.catalog.containers().len(),
+        state.catalog.items().len(),
+        state.catalog.update_id()
+    );
+    HttpResponse::new(200, "text/html; charset=\"utf-8\"", body.into_bytes())
+}
+
+fn optional_size(size: Option<u64>) -> String {
+    size.map(|value| value.to_string()).unwrap_or_default()
+}
+
+fn table_cell(out: &mut String, value: &str) {
+    out.push_str("<td>");
+    html_escape_into(out, value);
+    out.push_str("</td>");
+}
+
+fn linked_table_cell(out: &mut String, value: &str) {
+    out.push_str("<td>");
+    if value.is_empty() {
+        out.push_str("</td>");
+        return;
+    }
+    out.push_str("<a href=\"");
+    html_escape_into(out, value);
+    out.push_str("\">");
+    html_escape_into(out, value);
+    out.push_str("</a></td>");
+}
+
+fn html_escape_into(out: &mut String, value: &str) {
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
 }
 
 fn media_response(
@@ -1007,6 +1140,28 @@ mod tests {
     }
 
     #[test]
+    fn ui_library_route_is_not_available_by_default() {
+        let state = RuntimeState::new(
+            ServerConfig::new(
+                "http://127.0.0.1:49152/",
+                "550e8400-e29b-41d4-a716-446655440000",
+                "Rusty Castle",
+            ),
+            Vec::new(),
+        );
+        let request = HttpRequest {
+            method: "GET".into(),
+            path: "/ui/library".into(),
+            headers: Vec::new(),
+            body: String::new(),
+        };
+
+        let response = route_request(&request, &state).unwrap();
+
+        assert_eq!(response.status, 404);
+    }
+
+    #[test]
     fn ui_route_returns_static_html_when_enabled() {
         let mut state = RuntimeState::new(
             ServerConfig::new(
@@ -1034,5 +1189,57 @@ mod tests {
         assert_eq!(response.content_type, "text/html; charset=\"utf-8\"");
         assert!(body.contains("Rusty Castle Observatory"));
         assert!(body.contains("1</strong><span>media items"));
+    }
+
+    #[test]
+    fn ui_library_route_renders_catalog_metadata_when_enabled() {
+        let mut item = MediaItem::mp4(
+            "episode-1",
+            "Clip & Trailer",
+            "http://127.0.0.1:49152/media/episode-1",
+        );
+        item.parent_id = "season-1".into();
+        item.size = Some(1234);
+        item.duration = Some("0:01:30.500".into());
+        let catalog = StaticCatalog::from_parts(
+            vec![MediaContainer::new("season-1", "0", "Season <1>")],
+            vec![item.clone()],
+        );
+        let state = RuntimeState {
+            config: ServerConfig::new(
+                "http://127.0.0.1:49152/",
+                "550e8400-e29b-41d4-a716-446655440000",
+                "Rusty Castle",
+            ),
+            catalog,
+            media: vec![ServedMedia {
+                item,
+                path: PathBuf::from("episode-1.mp4"),
+            }],
+            web_ui_enabled: true,
+            scenario_recorder: None,
+        };
+        let request = HttpRequest {
+            method: "GET".into(),
+            path: "/ui/library".into(),
+            headers: Vec::new(),
+            body: String::new(),
+        };
+
+        let response = route_request(&request, &state).unwrap();
+        let body = std::str::from_utf8(&response.body).unwrap();
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type, "text/html; charset=\"utf-8\"");
+        assert!(body.contains("<h1>Library</h1>"));
+        assert!(body.contains("season-1"));
+        assert!(body.contains("Season &lt;1&gt;"));
+        assert!(body.contains("episode-1"));
+        assert!(body.contains("Clip &amp; Trailer"));
+        assert!(body.contains("video/mp4"));
+        assert!(body.contains(">1234</td>"));
+        assert!(body.contains("0:01:30.500"));
+        assert!(body.contains("http://127.0.0.1:49152/media/episode-1"));
+        assert!(body.contains("http-get:*:video/mp4:DLNA.ORG_PN="));
     }
 }
