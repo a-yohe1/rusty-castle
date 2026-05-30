@@ -93,6 +93,16 @@ Check the embedded build version:
 cargo run -p rusty-castle -- --version
 ```
 
+Enable the experimental browser observatory UI:
+
+```sh
+RUSTY_CASTLE_HOST=192.168.1.10 cargo run -p rusty-castle -- --web-ui /path/to/media
+```
+
+When enabled, open `http://192.168.1.10:49152/ui` to inspect the initial
+server-rendered UI surface. The normal DLNA routes and media serving behavior
+remain unchanged.
+
 `RUSTY_CASTLE_HOST` should be the LAN address that TVs and other DLNA clients
 can reach. The server listens on:
 

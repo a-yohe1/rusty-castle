@@ -1,7 +1,7 @@
 use log::info;
 use rusty_castle::runtime::{RuntimeConfig, run};
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -13,13 +13,13 @@ const VERSION: &str = env!("RUSTY_CASTLE_VERSION");
 fn main() -> std::io::Result<()> {
     init_logging();
 
-    let media_dir = match env::args_os().nth(1) {
-        Some(arg) if arg == OsStr::new("--version") || arg == OsStr::new("-V") => {
+    let args = parse_args(env::args_os().skip(1))?;
+    let media_dir = match args.action {
+        StartupAction::Version => {
             println!("rusty-castle {VERSION}");
             return Ok(());
         }
-        Some(arg) => PathBuf::from(arg),
-        None => env::current_dir()?,
+        StartupAction::Serve { media_dir } => media_dir.unwrap_or(env::current_dir()?),
     };
     let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 49152);
     let host = env::var("RUSTY_CASTLE_HOST").unwrap_or_else(|_| "127.0.0.1".into());
@@ -29,6 +29,9 @@ fn main() -> std::io::Result<()> {
     let friendly_name = env::var("RUSTY_CASTLE_NAME").unwrap_or_else(|_| "Rusty Castle".into());
 
     let mut config = RuntimeConfig::new(bind, base_url, uuid, friendly_name, media_dir);
+    if args.web_ui_enabled {
+        config = config.with_web_ui_enabled();
+    }
     if let Ok(interface) = host.parse::<Ipv4Addr>() {
         config = config.with_ssdp_interface(interface);
     }
@@ -45,6 +48,47 @@ fn main() -> std::io::Result<()> {
         info!("using {} for SSDP multicast", config.ssdp_interface);
     }
     run(config)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ParsedArgs {
+    action: StartupAction,
+    web_ui_enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum StartupAction {
+    Version,
+    Serve { media_dir: Option<PathBuf> },
+}
+
+fn parse_args(args: impl IntoIterator<Item = OsString>) -> std::io::Result<ParsedArgs> {
+    let mut web_ui_enabled = false;
+    let mut media_dir = None;
+    for arg in args {
+        if arg == OsStr::new("--version") || arg == OsStr::new("-V") {
+            return Ok(ParsedArgs {
+                action: StartupAction::Version,
+                web_ui_enabled,
+            });
+        }
+        if arg == OsStr::new("--web-ui") {
+            web_ui_enabled = true;
+            continue;
+        }
+        if media_dir.is_none() {
+            media_dir = Some(PathBuf::from(arg));
+            continue;
+        }
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "expected at most one media directory",
+        ));
+    }
+    Ok(ParsedArgs {
+        action: StartupAction::Serve { media_dir },
+        web_ui_enabled,
+    })
 }
 
 fn init_logging() {
@@ -152,6 +196,48 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_version_argument() {
+        let args = parse_args([OsString::from("--version")]).unwrap();
+
+        assert_eq!(args.action, StartupAction::Version);
+        assert!(!args.web_ui_enabled);
+    }
+
+    #[test]
+    fn parses_default_media_directory() {
+        let args = parse_args([]).unwrap();
+
+        assert_eq!(args.action, StartupAction::Serve { media_dir: None });
+        assert!(!args.web_ui_enabled);
+    }
+
+    #[test]
+    fn parses_explicit_media_directory() {
+        let args = parse_args([OsString::from("/media")]).unwrap();
+
+        assert_eq!(
+            args.action,
+            StartupAction::Serve {
+                media_dir: Some(PathBuf::from("/media"))
+            }
+        );
+        assert!(!args.web_ui_enabled);
+    }
+
+    #[test]
+    fn parses_web_ui_with_media_directory() {
+        let args = parse_args([OsString::from("--web-ui"), OsString::from("/media")]).unwrap();
+
+        assert_eq!(
+            args.action,
+            StartupAction::Serve {
+                media_dir: Some(PathBuf::from("/media"))
+            }
+        );
+        assert!(args.web_ui_enabled);
+    }
 
     #[test]
     fn formats_unix_epoch_timestamp() {

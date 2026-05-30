@@ -39,6 +39,8 @@ pub struct RuntimeConfig {
     pub friendly_name: String,
     /// Media directory to scan.
     pub media_dir: PathBuf,
+    /// Enables the experimental browser-based observatory UI.
+    pub web_ui_enabled: bool,
     /// Optional scenario capture JSONL path.
     pub scenario_capture_path: Option<PathBuf>,
 }
@@ -59,6 +61,7 @@ impl RuntimeConfig {
             uuid: uuid.into(),
             friendly_name: friendly_name.into(),
             media_dir: media_dir.into(),
+            web_ui_enabled: false,
             scenario_capture_path: None,
         }
     }
@@ -72,6 +75,12 @@ impl RuntimeConfig {
     /// Captures HTTP interactions to a JSON Lines scenario file.
     pub fn with_scenario_capture_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.scenario_capture_path = Some(path.into());
+        self
+    }
+
+    /// Enables the experimental browser-based observatory UI.
+    pub fn with_web_ui_enabled(mut self) -> Self {
+        self.web_ui_enabled = true;
         self
     }
 }
@@ -91,6 +100,7 @@ pub struct RuntimeState {
     config: ServerConfig,
     catalog: StaticCatalog,
     media: Vec<ServedMedia>,
+    web_ui_enabled: bool,
     scenario_recorder: Option<ScenarioRecorder>,
 }
 
@@ -103,6 +113,7 @@ impl RuntimeState {
             config,
             catalog,
             media,
+            web_ui_enabled: false,
             scenario_recorder: None,
         }
     }
@@ -126,6 +137,7 @@ impl RuntimeState {
             ),
             catalog,
             media: scanned.media,
+            web_ui_enabled: config.web_ui_enabled,
             scenario_recorder: None,
         })
     }
@@ -518,6 +530,7 @@ fn route_request(request: &HttpRequest, state: &RuntimeState) -> io::Result<Http
         ("GET", "/device.xml") => xml_response(device_xml(&state.config)),
         ("GET", "/ContentDirectory/scpd.xml") => xml_response(content_directory_scpd_xml()),
         ("GET", "/ConnectionManager/scpd.xml") => xml_response(connection_manager_scpd_xml()),
+        ("GET", "/ui") if state.web_ui_enabled => Ok(ui_index_response(state)),
         ("POST", "/ContentDirectory/control") | ("POST", "/ConnectionManager/control") => {
             let response = match handle_control(&request.body, &state.catalog) {
                 Ok(response) => response,
@@ -544,6 +557,39 @@ fn route_request(request: &HttpRequest, state: &RuntimeState) -> io::Result<Http
             b"not found".to_vec(),
         )),
     }
+}
+
+fn ui_index_response(state: &RuntimeState) -> HttpResponse {
+    let body = format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rusty Castle Observatory</title>
+<style>
+:root {{ color-scheme: light dark; font-family: system-ui, sans-serif; }}
+body {{ margin: 0; background: #f7f7f3; color: #202124; }}
+main {{ max-width: 760px; margin: 0 auto; padding: 48px 24px; }}
+h1 {{ font-size: 2rem; margin: 0 0 12px; }}
+p {{ line-height: 1.5; }}
+.metric {{ display: inline-block; margin: 16px 16px 0 0; }}
+.metric strong {{ display: block; font-size: 1.75rem; }}
+</style>
+</head>
+<body>
+<main>
+<h1>Rusty Castle Observatory</h1>
+<p>Experimental DLNA MediaServer inspection surface.</p>
+<div class="metric"><strong>{}</strong><span>media items</span></div>
+<div class="metric"><strong>{}</strong><span>containers</span></div>
+</main>
+</body>
+</html>"#,
+        state.catalog.items().len(),
+        state.catalog.containers().len()
+    );
+    HttpResponse::new(200, "text/html; charset=\"utf-8\"", body.into_bytes())
 }
 
 fn media_response(
@@ -922,5 +968,71 @@ mod tests {
             config.scenario_capture_path.as_deref(),
             Some(Path::new("/tmp/rusty-castle-scenario.jsonl"))
         );
+    }
+
+    #[test]
+    fn runtime_config_accepts_web_ui_enabled() {
+        let config = RuntimeConfig::new(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 49152),
+            "http://127.0.0.1:49152/",
+            "550e8400-e29b-41d4-a716-446655440000",
+            "Rusty Castle",
+            ".",
+        )
+        .with_web_ui_enabled();
+
+        assert!(config.web_ui_enabled);
+    }
+
+    #[test]
+    fn ui_route_is_not_available_by_default() {
+        let state = RuntimeState::new(
+            ServerConfig::new(
+                "http://127.0.0.1:49152/",
+                "550e8400-e29b-41d4-a716-446655440000",
+                "Rusty Castle",
+            ),
+            Vec::new(),
+        );
+        let request = HttpRequest {
+            method: "GET".into(),
+            path: "/ui".into(),
+            headers: Vec::new(),
+            body: String::new(),
+        };
+
+        let response = route_request(&request, &state).unwrap();
+
+        assert_eq!(response.status, 404);
+    }
+
+    #[test]
+    fn ui_route_returns_static_html_when_enabled() {
+        let mut state = RuntimeState::new(
+            ServerConfig::new(
+                "http://127.0.0.1:49152/",
+                "550e8400-e29b-41d4-a716-446655440000",
+                "Rusty Castle",
+            ),
+            vec![ServedMedia {
+                item: MediaItem::mp4("clip", "Clip", "http://127.0.0.1:49152/media/clip"),
+                path: PathBuf::from("clip.mp4"),
+            }],
+        );
+        state.web_ui_enabled = true;
+        let request = HttpRequest {
+            method: "GET".into(),
+            path: "/ui".into(),
+            headers: Vec::new(),
+            body: String::new(),
+        };
+
+        let response = route_request(&request, &state).unwrap();
+        let body = std::str::from_utf8(&response.body).unwrap();
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type, "text/html; charset=\"utf-8\"");
+        assert!(body.contains("Rusty Castle Observatory"));
+        assert!(body.contains("1</strong><span>media items"));
     }
 }
